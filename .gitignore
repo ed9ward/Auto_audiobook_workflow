@@ -1,0 +1,27 @@
+# Created by the script on each user's machine
+.venv/
+.venv-setup.lock
+.cache/
+models/
+# (book folders contain only generated files: MP3, chapters/, temp_chunks/)
+chapters/
+temp_chunks/
+
+# Personal data and secrets (settings.json contains the API key)
+settings.json
+usage.json
+ref.wav
+*.wav
+*.mp3
+*.txt
+
+# Python and OS
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.lock
+
+# Previous program version kept by the updater
+*.prev
+settings.json.*

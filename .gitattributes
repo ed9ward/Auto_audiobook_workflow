@@ -1,0 +1,6 @@
+# Нужны только разработчику: в «Download ZIP» и git archive не попадают
+/tests export-ignore
+/.github export-ignore
+/.gitattributes export-ignore
+/docs export-ignore
+/launcher export-ignore

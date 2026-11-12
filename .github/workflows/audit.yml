@@ -1,0 +1,24 @@
+name: audit
+
+# Раз в неделю: нет ли известных уязвимостей в пакетах, закреплённых в audiobook_master.py.
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pip-audit==2.10.1
+      - name: Audit the pinned packages
+        # Список берётся прямо из закреплённых «имя==версия» в коде; локальные суффиксы сборок (+cu128) отбрасываются.
+        # PYSEC-2025-194 (CVE-2025-3000, torch.jit.script): программа этот вызов не использует; уйдёт при обновлении torch.
+        run: |
+          grep -ohE '"[A-Za-z0-9_.-]+==[0-9][A-Za-z0-9.]*' audiobook_master.py | tr -d '"' | sort -u > pinned.txt
+          cat pinned.txt
+          pip-audit -r pinned.txt --no-deps --disable-pip --ignore-vuln PYSEC-2025-194

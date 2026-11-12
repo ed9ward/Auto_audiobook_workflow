@@ -1,0 +1,55 @@
+name: release
+
+# Выпуск на GitHub (Releases) публикуется — собираем FoxyAudioBookMaker.exe и прикладываем его к выпуску.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: The version in the program must match the release
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.release.tag_name }}".TrimStart("v")
+          if (-not (Select-String -Path audiobook_master.py -SimpleMatch -Quiet -Pattern ('APP_VERSION = "' + $version + '"'))) {
+            Write-Error "APP_VERSION in audiobook_master.py is not $version"; exit 1
+          }
+      - name: Build FoxyAudioBookMaker.exe
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path audiobook_master.py -Pattern '^APP_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value
+          @(
+            'using System.Reflection;',
+            '[assembly: AssemblyTitle("Foxy AudioBook Maker")]',
+            '[assembly: AssemblyProduct("Foxy AudioBook Maker")]',
+            '[assembly: AssemblyDescription("Audiobooks from TXT, EPUB and FB2 with Qwen3-TTS and Gemini")]',
+            '[assembly: AssemblyCopyright("MIT License")]',
+            "[assembly: AssemblyVersion(""$version.0"")]",
+            "[assembly: AssemblyFileVersion(""$version.0"")]",
+            "[assembly: AssemblyInformationalVersion(""$version"")]"
+          ) | Set-Content -Encoding utf8 version.cs
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /optimize+ /out:FoxyAudioBookMaker.exe `
+            /win32icon:launcher\icon.ico /resource:audiobook_master.py,audiobook_master.py `
+            /reference:System.Windows.Forms.dll /reference:System.Drawing.dll launcher\FoxyAudioBookMaker.cs version.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $check = Start-Process .\FoxyAudioBookMaker.exe -ArgumentList "--launcher-selftest" -Wait -PassThru
+          if ($check.ExitCode -ne 0) { Write-Error "launcher self-test failed"; exit 1 }
+      - name: Checksums of the files the program downloads when it updates
+        shell: pwsh
+        run: |
+          $lines = foreach ($name in "FoxyAudioBookMaker.exe", "audiobook_master.py") {
+            (Get-FileHash $name -Algorithm SHA256).Hash.ToLower() + "  " + $name
+          }
+          [IO.File]::WriteAllText("SHA256SUMS", ($lines -join "`n") + "`n")
+      - name: Attach the files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" FoxyAudioBookMaker.exe audiobook_master.py SHA256SUMS --clobber

@@ -1,0 +1,82 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"            # по понедельникам полная проверка, вместе с Python 3.13
+  workflow_dispatch:               # полную проверку можно запустить кнопкой Run workflow
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.14", "3.13", "3.12"]' || '["3.14", "3.12"]') }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.python-version == '3.13' }}      # основной 3.14, 3.12 для совместимости обязателен, 3.13 только наблюдаем
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: .github/workflows/tests.yml
+      - name: Install dependencies
+        # те же версии, что закреплены в audiobook_master.py (pytest и ruff — только для проверок)
+        run: python -m pip install pytest==9.1.1 ruff==0.17.0 numpy==2.5.3 soundfile==0.14.0 requests==2.34.2 tkinterdnd2==0.6.4 sv-ttk==2.6.1 num2words==0.5.14
+      - name: Lint (real errors and unused code)
+        run: ruff check --select F,E9 audiobook_master.py tests
+      - name: Install ffmpeg and a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests -q --junitxml=report.xml
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest tests -q --junitxml=report.xml
+      - name: Build the Windows launcher FoxyAudioBookMaker.exe and run its self-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path audiobook_master.py -Pattern '^APP_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value
+          @(
+            'using System.Reflection;',
+            '[assembly: AssemblyTitle("Foxy AudioBook Maker")]',
+            '[assembly: AssemblyProduct("Foxy AudioBook Maker")]',
+            '[assembly: AssemblyDescription("Audiobooks from TXT, EPUB and FB2 with Qwen3-TTS and Gemini")]',
+            '[assembly: AssemblyCopyright("MIT License")]',
+            "[assembly: AssemblyVersion(""$version.0"")]",
+            "[assembly: AssemblyFileVersion(""$version.0"")]",
+            "[assembly: AssemblyInformationalVersion(""$version"")]"
+          ) | Set-Content -Encoding utf8 version.cs
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /optimize+ /out:FoxyAudioBookMaker.exe `
+            /win32icon:launcher\icon.ico /resource:audiobook_master.py,audiobook_master.py `
+            /reference:System.Windows.Forms.dll /reference:System.Drawing.dll launcher\FoxyAudioBookMaker.cs version.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $check = Start-Process .\FoxyAudioBookMaker.exe -ArgumentList "--launcher-selftest" -Wait -PassThru
+          if ($check.ExitCode -ne 0) { Write-Error "launcher self-test failed"; exit 1 }
+      - name: The Python installer address and checksum in the launcher are right
+        if: runner.os == 'Windows' && matrix.python-version == '3.14'
+        shell: pwsh
+        run: |
+          $source = Get-Content launcher\FoxyAudioBookMaker.cs -Raw
+          $url = [regex]::Match($source, 'PythonUrl = "([^"]+)"').Groups[1].Value
+          $expected = [regex]::Match($source, 'PythonSha256 = "([0-9a-f]{64})"').Groups[1].Value
+          Invoke-WebRequest $url -OutFile python-installer.exe
+          $actual = (Get-FileHash python-installer.exe -Algorithm SHA256).Hash.ToLower()
+          Write-Host "url=$url"; Write-Host "expected=$expected"; Write-Host "actual=$actual"
+          if ($actual -ne $expected) { Write-Error "installer checksum mismatch"; exit 1 }
+      - name: Show failed tests as annotations
+        if: failure()
+        shell: python
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          import xml.etree.ElementTree as ET
+          for case in ET.parse("report.xml").getroot().iter("testcase"):
+              for bad in list(case.iter("failure")) + list(case.iter("error")):
+                  text = " ".join((bad.get("message") or "").split())[:500]
+                  print(f"::error title={case.get('name')}::{text}")
